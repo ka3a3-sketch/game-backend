@@ -4,28 +4,61 @@ const PORT = process.env.PORT || 8080;
 const wss = new WebSocketServer({ port: PORT });
 
 let gameRoom = {
-    state: 'WAITING',
+    state: 'WAITING', // WAITING, SPINNING
     players: [],
     timer: 15,
-    interval: null,
-    botTimeout: null
+    interval: null
 };
 
 const BOT_NAMES = ["CryptoKing", "LuckyJoe", "TonMaster", "GramWinner", "MoonHodler", "BitSniper"];
 
 console.log(`WebSocket сервер запущен на порту ${PORT}`);
 
+// Функция добавления бота в комнату
+function ensureBotsInLobby() {
+    // Если игра не в процессе вращения и игроков меньше 2 (например, 0 или 1)
+    if (gameRoom.state === 'WAITING' && gameRoom.players.length < 2) {
+        // Проверяем, есть ли уже боты в комнате
+        let botCount = gameRoom.players.filter(p => p.id.startsWith('bot_')).length;
+        
+        // Если ботов нет вообще, подсаживаем одного или двух ботов для компании
+        if (botCount === 0) {
+            const randomBotName = BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)];
+            const randomBet = parseFloat((Math.random() * (0.5 - 0.25) + 0.25).toFixed(2));
+
+            gameRoom.players.push({
+                id: 'bot_' + Math.floor(Math.random() * 10000),
+                name: randomBotName,
+                bet: randomBet,
+                color: '#ef4444' // Красный цвет для бота
+            });
+
+            console.log(`[Лобби] Автоматически добавлен бот ${randomBotName} со ставкой ${randomBet}`);
+            broadcastRoomState();
+        }
+    }
+}
+
+// Запускаем проверку лобби каждые 3 секунды (если комната пустая или там только 1 бот/игрок, добавляем активность)
+setInterval(() => {
+    ensureBotsInLobby();
+}, 3000);
+
 wss.on('connection', (ws) => {
-    console.log('>>> Новый игрок успешно подключился по WebSocket!');
+    console.log('>>> Игрок подключился!');
+    
+    // Сразу при подключении отправляем состояние (чтобы игрок сразу видел ботов в лобби)
     ws.send(JSON.stringify({ type: 'INIT', room: gameRoom }));
 
     ws.on('message', (data) => {
         try {
             const message = JSON.parse(data);
-            console.log('Получено сообщение от клиента:', message.type);
-
+            
             if (message.type === 'JOIN_ARENA') {
-                const existingPlayer = gameRoom.players.find(p => p.id === message.userId);
+                if (gameRoom.state === 'SPINNING') return;
+
+                // Добавляем или обновляем ставку реального игрока
+                let existingPlayer = gameRoom.players.find(p => p.id === message.userId);
                 if (existingPlayer) {
                     existingPlayer.bet += message.bet;
                 } else {
@@ -33,68 +66,33 @@ wss.on('connection', (ws) => {
                         id: message.userId,
                         name: message.name,
                         bet: message.bet,
-                        color: message.color || getRandomColor()
+                        color: '#3b82f6' // Синий для реального игрока
                     });
                 }
 
+                console.log(`Реальный игрок ${message.name} сделал ставку ${message.bet}. Всего игроков: ${gameRoom.players.length}`);
+                
                 broadcastRoomState();
-                console.log(`Игрок ${message.name} вошел. Всего игроков в комнате: ${gameRoom.players.length}`);
 
-                // Если вы зашли один, запускаем таймер бота на 5 секунд
-                if (gameRoom.state === 'WAITING' && gameRoom.players.length === 1) {
-                    if (gameRoom.botTimeout) clearTimeout(gameRoom.botTimeout);
-                    
-                    console.лох ? null : console.log('Таймер бота запущен (ждем 5 секунд)...');
-                    gameRoom.botTimeout = setTimeout(() => {
-                        if (gameRoom.state === 'WAITING' && gameRoom.players.length === 1) {
-                            addBotToGame();
-                        }
-                    }, 5000);
-                }
-
-                // Если набралось 2 игрока (вы + бот или другой игрок) -> запуск 15 секунд
-                if (gameRoom.state === 'WAITING' && gameRoom.players.length === 2) {
-                    if (gameRoom.botTimeout) clearTimeout(gameRoom.botTimeout);
+                // Как только в комнате стало 2 или более игроков (реальный игрок + бот или другой игрок)
+                // И таймер еще не запущен — запускаем отсчет 15 секунд!
+                if (gameRoom.state === 'WAITING' && !gameRoom.interval && gameRoom.players.length >= 2) {
                     startLobbyTimer();
                 }
             }
         } catch (e) {
-            console.error('Ошибка парсинга сообщения:', e);
+            console.error('Ошибка обработки сообщения:', e);
         }
     });
 
     ws.on('close', () => {
-        console.log('Игрок отключился от сервера');
+        console.log('Игрок отключился');
     });
 });
-
-function addBotToGame() {
-    if (gameRoom.state !== 'WAITING' || gameRoom.players.length !== 1) return;
-
-    const randomBotName = BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)];
-    const randomBet = parseFloat((Math.random() * (0.5 - 0.25) + 0.25).toFixed(2));
-
-    gameRoom.players.push({
-        id: 'bot_' + Math.floor(Math.random() * 1000),
-        name: randomBotName,
-        bet: randomBet,
-        color: getRandomColor()
-    });
-
-    console.log(`Бот ${randomBotName} автоматически добавлен в игру со ставкой ${randomBet}`);
-    broadcastRoomState();
-    startLobbyTimer();
-}
-
-function getRandomColor() {
-    const colors = ['#ef4444', '#f97316', '#84cc16', '#06b6d4', '#8b5cf6', '#ec4899'];
-    return colors[Math.floor(Math.random() * colors.length)];
-}
 
 function startLobbyTimer() {
     gameRoom.timer = 15;
     gameRoom.state = 'WAITING';
-    console.log('Начался обратный отсчет 15 секунд до старта!');
 
     if (gameRoom.interval) clearInterval(gameRoom.interval);
 
@@ -104,6 +102,7 @@ function startLobbyTimer() {
 
         if (gameRoom.timer <= 0) {
             clearInterval(gameRoom.interval);
+            gameRoom.interval = null;
             triggerGameSpin();
         }
     }, 1000);
@@ -111,7 +110,6 @@ function startLobbyTimer() {
 
 function triggerGameSpin() {
     gameRoom.state = 'SPINNING';
-    if (gameRoom.botTimeout) clearTimeout(gameRoom.botTimeout);
 
     let totalBank = gameRoom.players.reduce((sum, p) => sum + p.bet, 0);
     let randomStopX = Math.random() * 340;
@@ -139,13 +137,19 @@ function triggerGameSpin() {
         type: 'SPIN_START',
         stopX: randomStopX,
         winnerId: winningPlayer ? winningPlayer.id : null,
-        winnerName: winningPlayer ? winningPlayer.name : 'Никто',
+        winnerName: winningPlayer ? winningPlayer.name : 'Нитропобедитель',
         netWin: netWin.toFixed(2)
     });
 
+    // Через 7 секунд очищаем комнату, и фоновый setInterval автоматически подсадит нового бота для следующего раунда
     setTimeout(() => {
         gameRoom.players = [];
         gameRoom.state = 'WAITING';
+        gameRoom.timer = 15;
+        if (gameRoom.interval) {
+            clearInterval(gameRoom.interval);
+            gameRoom.interval = null;
+        }
         broadcast({ type: 'RESET_ROOM' });
     }, 7000);
 }
